@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=sequencial_baseline
-#SBATCH --time=0:30:00
+#SBATCH --time=0:15:00
 #SBATCH --partition=plgrid-gpu-a100
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4

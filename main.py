@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from torch.optim import AdamW
 import torch.nn.functional as F
 from torch.nn.attention import SDPBackend
+from torch.optim.lr_scheduler import LambdaLR
 from collections import OrderedDict
 from datasets import load_dataset, load_from_disk
 from transformers import GPT2TokenizerFast
@@ -13,8 +14,20 @@ import argparse
 import wandb
 import os
 from dotenv import load_dotenv
+import pynvml
 
 load_dotenv()
+
+
+def get_gpu_usage():
+    try:
+        handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+        info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+        util = pynvml.nvmlDeviceGetUtilizationRates(handle)
+        return util.gpu, info.used / 1024**2
+    except:
+        return 0, 0
+
 
 class EmbeddingLayer(nn.Module):
     def __init__(self, vocab_size, embed_dim, max_len):
@@ -223,6 +236,22 @@ def calculate_valid_loss(model, valid_dataloader, device, validation_steps):
     return mean_valid_loss
 
 
+def get_wsd_schedule(optimizer, num_warmup_steps, num_decay_steps, num_training_steps):
+    def lr_lambda(current_step):
+        if current_step < num_warmup_steps:
+            return float(current_step) / float(max(1, num_warmup_steps))
+
+        decay_start_step = num_training_steps - num_decay_steps
+        if current_step >= decay_start_step:
+            steps_into_decay = current_step - decay_start_step
+            decay_progress = steps_into_decay / float(max(1, num_decay_steps))
+            return max(0.0, 1.0 - decay_progress)
+
+        return 1.0
+
+    return LambdaLR(optimizer, lr_lambda)
+
+
 def train_model(config, device):
     dataloader = get_dataloader(config.batch_size, config.seq_length)
     valid_dataloader = get_dataloader(
@@ -235,8 +264,19 @@ def train_model(config, device):
     model.to(device)
     optimizer = AdamW(model.parameters(), lr=config.learning_rate)
 
+    warmup_steps = int(0.01 * config.train_steps)
+    # print("train_steps:", config.train_steps)
+    # print("warmup_steps:", warmup_steps)
+    decay_steps = int(0.10 * config.train_steps)
+    scheduler = get_wsd_schedule(
+        optimizer,
+        num_warmup_steps=warmup_steps,
+        num_decay_steps=decay_steps,
+        num_training_steps=config.train_steps,
+    )
+
     model.train()
-    
+
     wandb.watch(model, log="all", log_freq=config.log_train_loss_freq)
 
     for i, batch in zip(range(config.train_steps), dataloader):
@@ -256,16 +296,30 @@ def train_model(config, device):
         loss = mask_loss.mean()
 
         if i % config.log_train_loss_freq == 0:
-            print(f"Step:{i}, Train Loss:{loss}")
-            wandb.log({"train_loss": loss.item()}, step=i)
+            gpu_util, gpu_mem = get_gpu_usage()
 
-        if i % config.log_train_loss_freq == 0:
-            val_loss = calculate_valid_loss(model, valid_dataloader, device, validation_steps)
+            print(f"Step:{i}, Train Loss:{loss}")
+            current_lr = optimizer.param_groups[0]["lr"]
+            wandb.log(
+                {
+                    "train_loss": loss.item(),
+                    "lr": current_lr,
+                    "custom_gpu_util": gpu_util,
+                    "custom_gpu_mem_mb": gpu_mem,
+                },
+                step=i,
+            )
+
+        if i % config.log_valid_loss_freq == 0:
+            val_loss = calculate_valid_loss(
+                model, valid_dataloader, device, validation_steps
+            )
             print(f"Step:{i}, Valid loss:{val_loss}")
             wandb.log({"valid_loss": val_loss}, step=i)
 
         loss.backward()
         optimizer.step()
+        scheduler.step()
 
     print(
         f"Final valid loss:{calculate_valid_loss(model, valid_dataloader, device, validation_steps)}"
@@ -273,13 +327,15 @@ def train_model(config, device):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Transformer Training Script")
-    parser.add_argument("--n_layers", type=int, default=4, help="Number of transformer layers")
-    parser.add_argument("--dmodel", type=int, default=256, help="Embedding dimension size")
-    parser.add_argument("--n_heads", type=int, default=4, help="Number of attention heads")
-    parser.add_argument("--batch_size", type=int, default=64, help="Batch size")
-    parser.add_argument("--n_training_steps", type=int, default=1000, help="Total training steps")
-    
+    pynvml.nvmlInit()
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--n_layers", type=int, default=4)
+    parser.add_argument("--dmodel", type=int, default=256)
+    parser.add_argument("--n_heads", type=int, default=4)
+    parser.add_argument("--batch_size", type=int, default=64)
+    parser.add_argument("--n_training_steps", type=int, default=1000)
+
     args = parser.parse_args()
 
     job_name = os.getenv("SLURM_JOB_NAME", "local-run")
@@ -287,12 +343,8 @@ def main():
     job_id = os.getenv("SLURM_JOB_ID", "")
     if job_id:
         job_name = f"{job_name}-{job_id}"
-        
-    wandb.init(
-        project=os.getenv("WANDB_PROJECT"),
-        name=job_name,
-        config=vars(args)
-    )
+
+    wandb.init(project=os.getenv("WANDB_PROJECT"), name=job_name, config=vars(args))
 
     config = SimpleNamespace(
         train_steps=args.n_training_steps,
@@ -305,14 +357,14 @@ def main():
         dropout=0.0,
         seq_length=256,
         batch_size=args.batch_size,
-        log_train_loss_freq=50,
-        log_valid_loss_freq=50
+        log_train_loss_freq=10,
+        log_valid_loss_freq=50,
     )
-    
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if device.type == "cpu":
         print(f"Device type is: {device}. Remember to train on GPU.")
-        
+
     train_model(config, device)
     wandb.finish()
 
