@@ -4,3 +4,4 @@ transformers
 numpy
 wandb
 python-dotenv
+nvidia-ml-py
