@@ -3,3 +3,4 @@ datasets
 transformers
 numpy
 wandb
+python-dotenv

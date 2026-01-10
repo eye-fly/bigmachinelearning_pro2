@@ -1,0 +1,24 @@
+#!/bin/bash
+#SBATCH --job-name=sequencial_baseline
+#SBATCH --time=0:30:00
+#SBATCH --partition=plgrid-gpu-a100
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=32G
+#SBATCH --output=logs/output_%j.txt
+#SBATCH --error=logs/output_%j.txt
+
+mkdir -p logs
+
+source .venv/bin/activate
+
+echo $HF_HOME
+
+python main.py \
+    --n_layers 4 \
+    --dmodel 256 \
+    --n_heads 4 \
+    --batch_size 64 \
+    --n_training_steps 1000
+
+#  tail -F logs/output_$(sacct -XPno jobid | tail -1).txt

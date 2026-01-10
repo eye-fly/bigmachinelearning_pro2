@@ -1,5 +1,3 @@
-main.py
-
 from functools import partial
 import torch
 import torch.nn as nn
@@ -11,7 +9,12 @@ from torch.nn.attention import SDPBackend
 from collections import OrderedDict
 from datasets import load_dataset, load_from_disk
 from transformers import GPT2TokenizerFast
+import argparse
+import wandb
+import os
+from dotenv import load_dotenv
 
+load_dotenv()
 
 class EmbeddingLayer(nn.Module):
     def __init__(self, vocab_size, embed_dim, max_len):
@@ -233,6 +236,8 @@ def train_model(config, device):
     optimizer = AdamW(model.parameters(), lr=config.learning_rate)
 
     model.train()
+    
+    wandb.watch(model, log="all", log_freq=config.log_train_loss_freq)
 
     for i, batch in zip(range(config.train_steps), dataloader):
         input_ids = batch["input_ids"].to(device)
@@ -252,11 +257,12 @@ def train_model(config, device):
 
         if i % config.log_train_loss_freq == 0:
             print(f"Step:{i}, Train Loss:{loss}")
+            wandb.log({"train_loss": loss.item()}, step=i)
 
         if i % config.log_train_loss_freq == 0:
-            print(
-                f"Valid loss:{calculate_valid_loss(model, valid_dataloader, device, validation_steps)}"
-            )
+            val_loss = calculate_valid_loss(model, valid_dataloader, device, validation_steps)
+            print(f"Step:{i}, Valid loss:{val_loss}")
+            wandb.log({"valid_loss": val_loss}, step=i)
 
         loss.backward()
         optimizer.step()
@@ -267,24 +273,48 @@ def train_model(config, device):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Transformer Training Script")
+    parser.add_argument("--n_layers", type=int, default=4, help="Number of transformer layers")
+    parser.add_argument("--dmodel", type=int, default=256, help="Embedding dimension size")
+    parser.add_argument("--n_heads", type=int, default=4, help="Number of attention heads")
+    parser.add_argument("--batch_size", type=int, default=64, help="Batch size")
+    parser.add_argument("--n_training_steps", type=int, default=1000, help="Total training steps")
+    
+    args = parser.parse_args()
+
+    job_name = os.getenv("SLURM_JOB_NAME", "local-run")
+
+    job_id = os.getenv("SLURM_JOB_ID", "")
+    if job_id:
+        job_name = f"{job_name}-{job_id}"
+        
+    wandb.init(
+        project=os.getenv("WANDB_PROJECT"),
+        name=job_name,
+        config=vars(args)
+    )
+
     config = SimpleNamespace(
-        train_steps=1000,
+        train_steps=args.n_training_steps,
         vocab_size=50257,
         max_len=256,
-        d_model=256,
-        num_heads=4,
-        num_layers=4,
+        d_model=args.dmodel,
+        num_heads=args.n_heads,
+        num_layers=args.n_layers,
         learning_rate=1e-4,
         dropout=0.0,
         seq_length=256,
-        batch_size=64,
-        log_train_loss_freq=100,
-        log_valid_loss_freq=100,
+        batch_size=args.batch_size,
+        log_train_loss_freq=50,
+        log_valid_loss_freq=50
     )
+    
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if device.type == "cpu":
         print(f"Device type is: {device}. Remember to train on GPU.")
+        
     train_model(config, device)
+    wandb.finish()
 
 
 if __name__ == "__main__":
