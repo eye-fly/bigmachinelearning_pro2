@@ -1,6 +1,33 @@
 
-2. 3. 5. done in Main.py, wandb was used and config/hyperparameters where also saved to it
+2. 3. 5. 6. done in Main.py, wandb was used and config/hyperparameters where also saved to it
     5. for WSD simple fuction was used `get_wsd_schedule`
 
 4. done in fsdp_main.py because of the fact that while running on athena wandb always encountered error '{"time":"2026-01-10T21:03:09.276081741+01:00","level":"ERROR","msg":"monitor: failed to initialize GPU resource: monitor: could not get GPU binary port: timeout reading portfile /net/tscratch/people/plgjm438620/slurm_jobdir/2322414/tmp.t0022/wandb-system-monitor-portfile-1774696007"}' a had do mannully add gpu culization logigng , the 0% util every 100steps is when val loss was calulated and most likele is coused by dist.all_reduce
    for fsdp torch.distributed.fsdp.FullyShardedDataParallel and os envs from torchrun WORLD_SIZE, RANK, LOCAL_RANK besideds bfloat16 wasu used as it's supported on A100, 
+
+7. done in grid_search.py number of steps calculated inside func `train_model` 
+    other tasks/point's from main.py and fsdp_main.py combined for 2 gpu training.
+
+
+![learning rate schedule](raport/lr.png)
+
+Optimal number of tokens D = 20N
+
+training steps = D/ (global_batch_size * sequence_lenght)
+    where global_batch_size=256*2
+    and sequence_lenght = 256
+values from runs:
+    Params: 30.00M
+    Optimal tokens: 599.91M
+    steps: 4576
+
+
+![gpu util](raport/2gpu.png)
+![gpu mem](raport/gpu_mem.png)
+
+
+![grid_search](raport/chinchi_2only.png)
+![grid_search](raport/chinchi.png)
+
+[athena][plgjm438620@login01 bml]$ echo "GPU hours used: $(hpc-jobs-history -A plgpkattenion-gpu-a100 -d 250 | awk '$11 ~ /^[0-9.]*$/ {sum += $11} END {print sum}')"
+GPU hours used: 6.43

@@ -1,6 +1,6 @@
 #!/bin/bash
-#SBATCH --job-name=sequencial_baseline
-#SBATCH --time=0:15:00
+#SBATCH --job-name=SwiGLU
+#SBATCH --time=0:5:00
 #SBATCH --partition=plgrid-gpu-a100
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
@@ -19,6 +19,6 @@ python main.py \
     --dmodel 256 \
     --n_heads 4 \
     --batch_size 64 \
-    --n_training_steps 1000
+    --n_training_steps 500
 
 #  tail -F logs/output_$(sacct -XPno jobid | tail -1).txt
